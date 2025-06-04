@@ -1,0 +1,69 @@
+name: Flyway Testing
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  migrate:
+    name: Run Migration
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@v4
+
+      - name: Install Flyway
+        id: install-flyway
+        run: wget -qO- https://github.com/flyway/flyway/releases/download/flyway-11.9.0/flyway-commandline-11.9.0-linux-x64.tar.gz | tar -xvz && sudo ln -s `pwd`/flyway-11.9.0/flyway /usr/local/bin
+
+      - name: Verify Flyway Installation
+        id: verify-flyway
+        run: flyway -v
+
+      - name: Get Information
+        id: get-info
+        run: |
+          flyway \
+            -user="postgres" \
+            -password="postgres" \
+            -url="jdbc:postgresql://localhost:5432/postgres" \
+            info
+
+      - name: Migrate Database
+        id: migrate-db
+        run: |
+          flyway \
+            -user="postgres" \
+            -password="postgres" \
+            -url="jdbc:postgresql://localhost:5432/postgres" \
+            migrate
+
+      - name: Verify Migration
+        id: verify-migration
+        run: |
+          flyway \
+            -user="postgres" \
+            -password="postgres" \
+            -url="jdbc:postgresql://localhost:5432/postgres" \
+            info
+
+      - name: Query Database
+        id: query-db
+        run: |
+          psql -h localhost -U postgres -d postgres -c "SELECT * FROM flyway_schema_history;"

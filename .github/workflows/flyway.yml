@@ -75,5 +75,7 @@ jobs:
 
       - name: Query Database
         id: query-db
+        env:
+          PGPASSWORD: postgres
         run: |
           psql -h localhost -U postgres -d postgres -c "SELECT * FROM flyway_schema_history;"

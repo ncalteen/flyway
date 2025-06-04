@@ -1,0 +1,170 @@
+# This workflow enables database migrations via branch deployments to various
+# environments. Migrations are performed via pull request comments.
+name: Database Migration
+
+on:
+  issue_comment:
+    types:
+      - created
+
+permissions:
+  checks: read
+  contents: write
+  deployments: write
+  id-token: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  start:
+    name: Start Branch Deployment
+    runs-on: ubuntu-latest
+
+    # Only start branch deployments on pull request comments
+    if: github.event.issue.pull_request
+
+    # The deployments environment is used by the branch-deploy workflow to
+    # ensure consistent behavior across all deployments
+    environment: deployments
+
+    # Set the outputs to be used by the rest of the workflow
+    # prettier-ignore
+    outputs:
+      continue: ${{ steps.branch-deploy.outputs.continue }}
+      noop: ${{ steps.branch-deploy.outputs.noop }}
+      deployment_id: ${{ steps.branch-deploy.outputs.deployment_id }}
+      environment: ${{ steps.branch-deploy.outputs.environment }}
+      ref: ${{ steps.branch-deploy.outputs.ref }}
+      comment_id: ${{ steps.branch-deploy.outputs.comment_id }}
+      initial_reaction_id: ${{ steps.branch-deploy.outputs.initial_reaction_id }}
+      actor_handle: ${{ steps.branch-deploy.outputs.actor_handle }}
+
+    steps:
+      - name: Start Branch Deployment
+        id: branch-deploy
+        uses: usps/fast-track-branch-deploy-action@v2.2
+        with:
+          action: start
+          app_id: ${{ env.GITHUB_APP_ID }}
+          app_pem: ${{ env.GITHUB_APP_PEM_FILE }}
+
+  migrate:
+    name: Migrate Database
+    runs-on: ubuntu-latest
+
+    needs:
+      - start
+
+    # Only start after the branch deployment is initialized
+    if: ${{ needs.start.outputs.continue == 'true' }}
+
+    # Use the environment selected in the setup job
+    environment: ${{ needs.start.outputs.environment }}
+
+    # Set the default working directory to `migrations/`. This is where database
+    # migration files/scripts will be located.
+    defaults:
+      run:
+        working-directory: migrations
+
+    # Set the outcome based on if the migration succeeded
+    outputs:
+      outcome: ${{ steps.migrate.outputs.outcome }}
+
+    # Set environment variables to use for Terraform. These will fall back to
+    # the Fast Track secrets if not set in the repository environments.
+    # prettier-ignore
+    env:
+      # Azure
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID || secrets.FAST_TRACK_ARM_CLIENT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID || secrets.FAST_TRACK_ARM_SUBSCRIPTION_ID }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID || secrets.FAST_TRACK_ARM_TENANT_ID }}
+
+      # Google Cloud Platform (GCP)
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID || secrets.FAST_TRACK_GCP_PROJECT_ID }}
+      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT || secrets.FAST_TRACK_GCP_SERVICE_ACCOUNT }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER || secrets.FAST_TRACK_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+
+      # Terraform State (Azure Blob Storage)
+      TF_STATE_CONTAINER: ${{ vars.TF_STATE_CONTAINER }}
+      TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
+      TF_STATE_RESOURCE_GROUP: ${{ vars.TF_STATE_RESOURCE_GROUP }}
+      TF_STATE_STORAGE_ACCOUNT: ${{ vars.TF_STATE_STORAGE_ACCOUNT }}
+
+      # Terraform State (Google Cloud Storage)
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX }}
+
+      # Terraform Variables
+      TERRAFORM_VERSION: ${{ vars.TERRAFORM_VERSION }}
+
+      # Any variables that need to be explicitly passed to Terraform can be done
+      # using the TF_VAR_ prefix.
+      TF_VAR_gcp_project_id: ${{ secrets.GCP_PROJECT_ID || secrets.FAST_TRACK_GCP_PROJECT_ID }}
+
+    steps:
+      # prettier-ignore
+      - name: Migrate Database
+        id: migrate
+        uses: usps/fast-track-terraform-deploy-action@v1.0
+        with:
+          # Azure Configuration
+          arm_client_id: ${{ env.ARM_CLIENT_ID }}
+          arm_subscription_id: ${{ env.ARM_SUBSCRIPTION_ID }}
+          arm_tenant_id: ${{ env.ARM_TENANT_ID }}
+          state_container: ${{ env.TF_STATE_CONTAINER }}
+          state_key: ${{ env.TF_STATE_KEY }}
+          state_resource_group: ${{ env.TF_STATE_RESOURCE_GROUP }}
+          state_storage_account: ${{ env.TF_STATE_STORAGE_ACCOUNT }}
+
+          # GCP Configuration
+          gcp_project_id: ${{ env.GCP_PROJECT_ID }}
+          gcp_service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
+          gcp_workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          state_bucket: ${{ env.TF_STATE_BUCKET }}
+          state_prefix: ${{ env.TF_STATE_PREFIX }}
+
+          # Terraform Configuration
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+          # GitHub Configuration
+          app_id: ${{ env.GITHUB_APP_ID }}
+          app_pem: ${{ env.GITHUB_APP_PEM_FILE }}
+          ref: ${{ needs.start.outputs.ref }}
+
+          # Other Configuration
+          environment: ${{ needs.start.outputs.environment }}
+          noop: ${{ needs.start.outputs.noop }}
+
+  stop:
+    name: Stop Branch Deployment
+    runs-on: ubuntu-latest
+
+    needs:
+      - migrate
+      - start
+
+    # Always run if the branch deployment was started
+    if: ${{ always() && needs.start.outputs.continue == 'true' }}
+
+    # Switch back to the deployments environment to update deployment statuses
+    environment: deployments
+
+    env:
+      DEPLOY_STATUS: ${{ needs.migrate.outputs.outcome || 'failure' }}
+
+    steps:
+      - name: Stop Branch Deployment
+        id: branch-deploy
+        uses: usps/fast-track-branch-deploy-action@v2.2
+        with:
+          action: stop
+          actor_handle: ${{ needs.start.outputs.actor_handle }}
+          comment_id: ${{ needs.start.outputs.comment_id }}
+          deployment_id: ${{ needs.start.outputs.deployment_id }}
+          deployment_environment: deployments
+          environment: ${{ needs.start.outputs.environment }}
+          noop: ${{ needs.start.outputs.noop }}
+          initial_reaction_id: ${{ needs.start.outputs.initial_reaction_id }}
+          ref: ${{ needs.start.outputs.ref }}
+          status: ${{ env.DEPLOY_STATUS }}

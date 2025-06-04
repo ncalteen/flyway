@@ -36,6 +36,13 @@ jobs:
         id: verify-flyway
         run: flyway -v
 
+      - name: Validate Migration Files
+        id: validate-files
+        run: |
+          flyway \
+            -validateMigrationNaming=true \
+            info
+
       - name: Get Information
         id: get-info
         run: |
